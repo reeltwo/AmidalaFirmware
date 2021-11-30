@@ -1,0 +1,108 @@
+' Roboteq SBL2360 variable speed control script
+' Throttle pin 3 PWM pulse range 1000-2000 will map top speed to 500-4000 RPMs
+
+Option Explicit
+
+#define THUMB_WHEEL_INPUT   3
+#define MAX_STEPS           100
+
+#define PULSE_LOW           1000
+#define PULSE_HIGH          2000
+
+#define RPM_LOW             500
+#define RPM_HIGH            4000 ' Maximum value any higher and loop errors happen
+
+#define ACCELERATION_LOW    10000
+#define ACCELERATION_HIGH   30000
+
+#define DECELERATION_LOW    17000
+#define DECELERATION_HIGH   43000
+
+dim Pulse as integer
+dim PrevPulse as integer
+dim PulseIndex as integer
+dim i as integer
+dim val as integer
+dim status as integer
+dim prevStatus as integer
+dim pulseMode as boolean
+dim FluxSetpoint as integer
+dim Speed as integer
+
+'Initialzation
+
+PulseIndex = -1
+prevStatus = -1
+pulseMode = 0
+
+Top:
+
+'checks pulse width at desired input
+Pulse = getvalue(_PI, THUMB_WHEEL_INPUT)
+If Pulse < PULSE_LOW
+  Pulse = PULSE_LOW
+ElseIf Pulse > PULSE_HIGH
+  Pulse = PULSE_HIGH
+End If
+
+status = getvalue(_FS, 1)
+' Update the last seen mode for closed loop speed/position or open loop
+' not other modes. We will use this flag to restore to that mode when
+' pulse signals are restored
+If status <> prevStatus
+    If ((status and 2) = 0x2)
+		If Not pulseMode
+			pulseMode = TRUE
+			'Reset controllers to Closed Loop Speed Position
+            setconfig(_MMOD, 1, 6)
+            setconfig(_MMOD, 2, 6)
+		End If
+	ElseIf pulseMode
+		' Pulse has been disabled
+		pulseMode = 0
+    End If
+    prevStatus = status
+End If
+
+If pulseMode
+    ' Variable speed controls only in pulse mode
+    If (Pulse <> PrevPulse) 'if pulse is different than last recorded
+        For i = 0 AndWhile i <= MAX_STEPS
+            val = PULSE_LOW + i * ((PULSE_HIGH - PULSE_LOW) / (MAX_STEPS-1))
+            'Print("val=",val,"\n")
+            If Pulse <= val Then
+                If PulseIndex <> i Then
+                    val = RPM_LOW + i * ((RPM_HIGH - RPM_LOW) / (MAX_STEPS-1))
+                    'Print("RPM=",val)
+                    setconfig(_MXRPM, 1, val) 
+                    setconfig(_MXRPM, 2, val) 
+                    val = ACCELERATION_LOW + i * ((ACCELERATION_HIGH - ACCELERATION_LOW) / (MAX_STEPS-1))
+                    'Print(" ACCEL=",val)
+                    setconfig(_MAC, 1, val)
+                    setconfig(_MAC, 2, val)
+                    val = DECELERATION_LOW + i * ((DECELERATION_HIGH - DECELERATION_LOW) / (MAX_STEPS-1))
+                    'Print(" DECEL=",val,"\n")
+                    setconfig(_MDEC, 1, val)  
+                    setconfig(_MDEC, 2, val)
+                    PulseIndex = i
+                End If
+                Exit For ' Exit loop
+            End If
+        Next
+    End If
+End If
+
+PrevPulse = Pulse
+
+' Field Weakening
+Speed = abs(getvalue(_S, 1)) ' Read motor speed from Encoders
+If (Speed > 5000) ' check if above 5000 RPM
+  FluxSetpoint = (Speed - 5000) / 100 '1A per 100 RPM above 5000
+Else
+  FluxSetpoint = 0 ' No Flux current below 5000 RPM
+End If
+'Print("Speed=",Speed,"\n")
+
+wait(10) 'loop at 100Hz (every 10ms)
+
+goto Top  'loop indefinitely
