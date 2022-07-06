@@ -19,10 +19,13 @@
 #define DOME_DRIVE_PWM                  3
 
 #define DOME_DRIVE           DOME_DRIVE_PWM
+//#define DOME_DRIVE           DOME_DRIVE_SABER
 
 #define DEFAULT_BAUD_RATE    115200 /*57600*/
 
 #define CONSOLE_BUFFER_SIZE  64
+
+#define DOME_SENSOR_SERIAL  Serial3
 
 ////////////////////////////////
 
@@ -38,7 +41,8 @@
 #define SCALING              false   // set to true if acceleration/decelleration should be applied
 
 #if DRIVE_SYSTEM == DRIVE_SYSTEM_SABER
-#define DOME_DRIVE_SERIAL    Serial1
+#define DRIVE_SERIAL         Serial3
+#define DOME_DRIVE_SERIAL    DRIVE_SERIAL
 #define CHANNEL_MIXING       true   // set to true premix channels before sending commands
 #elif DRIVE_SYSTEM == DRIVE_SYSTEM_PWM
 #define CHANNEL_MIXING       false  // set to false if motor controller will mix the channels
@@ -61,7 +65,7 @@
 #endif
 
 #if !defined(DOME_DRIVE_SERIAL) && DOME_DRIVE == DOME_DRIVE_SABER
-#define DOME_DRIVE_SERIAL    Serial2
+#define DOME_DRIVE_SERIAL    Serial3
 #endif
 
 #ifndef MARCDUINO_BAUD_RATE
@@ -83,10 +87,10 @@
 ////////////////////////////////
 
 #define USE_DEBUG
-// #define USE_POCKET_REMOTE_DEBUG
+//#define USE_POCKET_REMOTE_DEBUG
 // #define USE_PPM_DEBUG
 //#define USE_MOTOR_DEBUG
-// #define USE_DOME_DEBUG
+#define USE_DOME_DEBUG
 // #define USE_SERVO_DEBUG
 // #define USE_VERBOSE_SERVO_DEBUG
 
@@ -96,16 +100,23 @@
 #include "core/AnalogMonitor.h"
 #include "audio/VMusic.h"
 #if DRIVE_SYSTEM  == DRIVE_SYSTEM_PWM
-#include "drive/TankDrivePWM.h"
+ #include "drive/TankDrivePWM.h"
 #endif
 #if DRIVE_SYSTEM >= DRIVE_SYSTEM_ROBOTEQ_PWM && DRIVE_SYSTEM <= DRIVE_SYSTEM_ROBOTEQ_PWM_SERIAL
-#include "drive/TankDriveRoboteq.h"
+ #include "drive/TankDriveRoboteq.h"
 #endif
 #if DOME_DRIVE  == DRIVE_SYSTEM_SABER
-#include "drive/TankDriveSabertooth.h"
+ #include "drive/TankDriveSabertooth.h"
 #endif
 #if DOME_DRIVE == DOME_DRIVE_PWM
-#include "drive/DomeDrivePWM.h"
+ #include "drive/DomeDrivePWM.h"
+#elif DOME_DRIVE == DOME_DRIVE_SABER
+ #include "drive/DomeDriveSabertooth.h"
+#endif
+#ifdef DOME_SENSOR_SERIAL
+ #include "drive/DomeSensorRingSerialListener.h"
+#else
+ #include "drive/DomePosition.h"
 #endif
 #include "ServoDispatchDirect.h"
 #include "ServoEasing.h"
@@ -157,7 +168,9 @@
 #define CONSOLE_SERIAL      Serial
 #define XBEE_SERIAL         Serial1
 #define VMUSIC_SERIAL       Serial2
+#if !defined(DOME_DRIVE_SERIAL) && !defined(DOME_SENSOR_SERIAL)
 #define AUX_SERIAL          Serial3
+#endif
 
 ////////////////////////////////
 
@@ -722,17 +735,22 @@ public:
         fVMusic(VMUSIC_SERIAL),
         fDriveStick(this),
         fDomeStick(this),
+    #ifdef DOME_SENSOR_SERIAL
+        fDomeRing(DOME_SENSOR_SERIAL),
+        fAutoDome(fDomeRing),
+    #else
         fAutoDome(params),
+    #endif
     #if DRIVE_SYSTEM == DRIVE_SYSTEM_SABER
-        fTankDrive(128, AUX_SERIAL, fDriveStick),
+        fTankDrive(128, DRIVE_SERIAL, fDriveStick),
     #elif DRIVE_SYSTEM == DRIVE_SYSTEM_PWM
         fTankDrive(servoDispatch, 1, 0, 4 fDriveStick),
     #elif DRIVE_SYSTEM == DRIVE_SYSTEM_ROBOTEQ_PWM
         fTankDrive(servoDispatch, 1, 0, 4, fDriveStick),
     #elif DRIVE_SYSTEM == DRIVE_SYSTEM_ROBOTEQ_SERIAL
-        fTankDrive(AUX_SERIAL, fDriveStick),
+        fTankDrive(DRIVE_SERIAL, fDriveStick),
     #elif DRIVE_SYSTEM == DRIVE_SYSTEM_ROBOTEQ_PWM_SERIAL
-        fTankDrive(AUX_SERIAL, servoDispatch, 1, 0, 4, fDriveStick),
+        fTankDrive(DRIVE_SERIAL, servoDispatch, 1, 0, 4, fDriveStick),
     #elif defined(DRIVE_SYSTEM)
         #error Unsupported DRIVE_SYSTEM
     #endif
@@ -1155,6 +1173,7 @@ public:
         }
     };
 
+#ifndef DOME_SENSOR_SERIAL
     class AmidalaAutoDome : public DomePosition /*, public CommandEvent*/
     {
     public:
@@ -1186,8 +1205,6 @@ public:
                     return kRandom;
                 case 4:
                     return kTarget;
-                case 5:
-                    return kCalibrate;
             }
             return kOff;
         }
@@ -1207,9 +1224,6 @@ public:
                     break;
                 case kTarget:
                     fParams.domemode = 4;
-                    break;
-                case kCalibrate:
-                    fParams.domemode = 5;
                     break;
             }
         }
@@ -1283,6 +1297,7 @@ public:
         AnalogMonitor fDomePosition;
         AmidalaParameters& fParams;
     };
+#endif
 
     class XBeePocketRemote : public JoystickController
     {
@@ -1331,10 +1346,16 @@ public:
         {
             Event evt = {};
             State prev = state;
+
             state.analog.stick.lx = map(x, 0, 1024, 127, -128);
             state.analog.stick.ly = map(y, 0, 1024, 127, -128);
+            state.analog.stick.rx = state.analog.stick.lx;
+            state.analog.stick.ry = state.analog.stick.ly;
             state.analog.button.l1 = map(w2, 0, 1024, 255, 0);
             state.analog.button.l2 = map(w1, 0, 1024, 255, 0);
+            // Serial.print(state.analog.button.l1); Serial.print(" - "); Serial.println(state.analog.button.l2);
+            state.analog.button.r1 = state.analog.button.l1;
+            state.analog.button.r2 = state.analog.button.l2;
             state.button.triangle = button[0];
             state.button.circle = button[1];
             state.button.cross = button[2];
@@ -1397,6 +1418,8 @@ public:
             evt.analog_changed.stick.ly  = state.analog.stick.ly - prev.analog.stick.ly;
             evt.analog_changed.button.l1 = state.analog.button.l1 - prev.analog.button.l1;
             evt.analog_changed.button.l2 = state.analog.button.l2 - prev.analog.button.l2;
+            evt.analog_changed.button.r1 = state.analog.button.r1 - prev.analog.button.r1;
+            evt.analog_changed.button.r2 = state.analog.button.r2 - prev.analog.button.r2;
             if (fConnecting)
             {
                 fConnecting = false;
@@ -1664,7 +1687,12 @@ public:
     DomeController fDomeStick;
     XBeePocketRemote* remote[2] = { &fDriveStick, &fDomeStick };
     AmidalaParameters params;
+#ifdef DOME_SENSOR_SERIAL
+    DomeSensorRingSerialListener fDomeRing;
+    DomePosition fAutoDome;
+#else
     AmidalaAutoDome fAutoDome;
+#endif
     // I2CReceiver fI2C;
 #if DRIVE_SYSTEM == DRIVE_SYSTEM_SABER
     TankDriveSabertooth fTankDrive;
@@ -3298,7 +3326,15 @@ void setup()
     CONSOLE_SERIAL.begin(DEFAULT_BAUD_RATE);
     XBEE_SERIAL.begin(57600);
     VMUSIC_SERIAL.begin(9600);
+#ifdef DRIVE_SERIAL
+    DRIVE_SERIAL.begin(DRIVE_BAUD_RATE);
+#elif defined(DOME_DRIVE_SERIAL)
+    DOME_DRIVE_SERIAL.begin(DRIVE_BAUD_RATE);
+#elif defined(DOME_SENSOR_SERIAL)
+    DOME_SENSOR_SERIAL.begin(DOMESENSOR_BAUD_RATE);
+#else
     AUX_SERIAL.begin(115200);
+#endif
 
     SetupEvent::ready();
 }
